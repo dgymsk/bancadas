@@ -1,0 +1,14 @@
+# Gate - Sistema de Validação para PySpark
+# Dependências do projeto
+
+# PySpark - obrigatório
+pyspark>=3.0.0
+
+# Testes
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Desenvolvimento
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
