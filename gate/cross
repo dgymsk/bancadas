@@ -1,0 +1,50 @@
+def cross_with_dimension_advanced(df_input: DataFrame, 
+                                  column_mapping: Dict[str, str],
+                                  _dimension: DataFrame,
+                                  join_type: str = "left",
+                                  select_columns: list = None,
+                                  handle_duplicates: bool = True) -> DataFrame:
+    """
+    Versão avançada do cruzamento com opções adicionais.
+    
+    Args:
+        df_input: DataFrame de entrada
+        column_mapping: Mapeamento de colunas
+        _dimension: DataFrame de dimensão
+        join_type: Tipo de join (left, inner, right, outer)
+        select_columns: Lista de colunas para selecionar no resultado final
+        handle_duplicates: Se True, remove duplicatas nas colunas de join da dimensão
+    
+    Returns:
+        DataFrame cruzado
+    """
+    
+    # Se precisarmos evitar conflito de nomes de colunas
+    if handle_duplicates:
+        # Criar alias para o dataframe de dimensão
+        _dimension_aliased = _dimension.alias("dim")
+        df_input_aliased = df_input.alias("input")
+        
+        # Construir condição de join com aliases
+        join_conditions = []
+        for col_origem, col_dimensao in column_mapping.items():
+            join_conditions.append(
+                F.col(f"input.{col_origem}") == F.col(f"dim.{col_dimensao}")
+            )
+        
+        # Combinar condições
+        join_condition = join_conditions[0]
+        for condition in join_conditions[1:]:
+            join_condition = join_condition & condition
+        
+        # Fazer o join
+        result_df = df_input_aliased.join(
+            _dimension_aliased,
+            on=join_condition,
+            how=join_type
+        )
+        
+        # Remover colunas duplicadas (colunas de join da dimensão)
+        cols_to_drop = [f"dim.{col}" for col in column_mapping.values()]
+        for col in cols_to_drop:
+            result_df = result_df.drop(F.col(col))
