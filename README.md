@@ -152,6 +152,100 @@ InListValidator(
 )
 ```
 
+## 🔗 Validadores de Dimensão
+
+Validadores de dimensão verificam se valores existem (ou NÃO existem) em tabelas de referência. Essencial para integridade referencial e qualidade de dados.
+
+### DataFrameDimensionValidator
+Valida contra outra tabela/DataFrame (dimensão).
+
+**Validação de existência (padrão):**
+```python
+# Validar que CPF existe em tabela de clientes cadastrados
+DataFrameDimensionValidator(
+    column="cpf",
+    dimension_df=df_clientes,        # DataFrame da dimensão
+    dimension_column="cpf",          # Coluna na dimensão para comparar
+    exists=True,                     # Deve existir (padrão)
+    name="CPFCadastrado"
+)
+```
+
+**Validação reversa (não deve existir):**
+```python
+# Validar que código NÃO existe - evita duplicatas
+DataFrameDimensionValidator(
+    column="codigo_produto",
+    dimension_df=df_produtos_existentes,
+    exists=False,                    # NÃO deve existir
+    name="CodigoNovo"
+)
+```
+
+**Características:**
+- Usa cache interno para performance
+- Ideal para dimensões pequenas/médias
+- Suporte a `exists=False` para validação reversa
+
+### ListDimensionValidator
+Valida contra lista pré-definida (similar ao InListValidator, mas com suporte a exists=False).
+
+```python
+ListDimensionValidator(
+    column="role",
+    valid_values=["admin", "user", "moderator"],
+    exists=True,
+    name="RolePermitido"
+)
+```
+
+### Casos de Uso
+
+**1. Integridade Referencial**
+```python
+# Garantir que FK existe na dimensão
+DataFrameDimensionValidator(
+    column="id_cliente",
+    dimension_df=dim_clientes,
+    exists=True,
+    name="ClienteExiste"
+)
+```
+
+**2. Anti-Duplicação**
+```python
+# Garantir que novo código não existe
+DataFrameDimensionValidator(
+    column="codigo",
+    dimension_df=produtos_cadastrados,
+    exists=False,
+    name="CodigoUnico"
+)
+```
+
+**3. Validação de Domínio**
+```python
+# Validar que estado existe em lista de UFs válidas
+DataFrameDimensionValidator(
+    column="estado",
+    dimension_df=dim_estados,
+    dimension_column="uf",
+    exists=True,
+    name="EstadoValido"
+)
+```
+
+### Arquitetura Modular
+
+A classe base `DimensionValidator` permite criar validadores customizados para diferentes fontes:
+
+```python
+# Futuras implementações possíveis:
+# - ExternalTableDimensionValidator (tabelas Databricks)
+# - APIDimensionValidator (validar via API REST)
+# - CacheDimensionValidator (cache distribuído)
+```
+
 ## 💡 Exemplo Completo com Análise de Histórico
 
 ```python
@@ -271,15 +365,17 @@ df_problematicos.show(truncate=False)
 ```
 bancadas/
 ├── gate/
-│   ├── __init__.py          # Exports principais
-│   ├── core.py              # Classes Gate e Validator
-│   ├── validators.py        # Validadores pré-construídos
-│   └── exceptions.py        # Exceções customizadas
+│   ├── __init__.py               # Exports principais
+│   ├── core.py                   # Classes Gate e Validator
+│   ├── validators.py             # Validadores pré-construídos
+│   ├── dimension_validators.py   # Validadores de dimensão
+│   └── exceptions.py             # Exceções customizadas
 ├── examples/
-│   ├── simple_example.py    # Exemplo simples focado na ideia central
-│   └── usage_example.py     # Exemplos variados
+│   ├── simple_example.py         # Exemplo simples focado na ideia central
+│   ├── dimension_example.py      # Exemplos de validação de dimensões
+│   └── usage_example.py          # Exemplos variados
 ├── tests/
-│   └── test_gate.py         # Testes unitários
+│   └── test_gate.py              # Testes unitários
 ├── README.md
 └── requirements.txt
 ```
@@ -288,8 +384,9 @@ bancadas/
 
 ```bash
 cd examples
-python simple_example.py  # Exemplo simples e direto
-python usage_example.py   # Exemplos variados
+python simple_example.py     # Exemplo simples e direto
+python dimension_example.py  # Validação de dimensões (exists/not exists)
+python usage_example.py      # Exemplos variados
 ```
 
 ## ✅ Boas Práticas

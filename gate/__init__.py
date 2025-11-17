@@ -24,9 +24,14 @@ from .validators import (
     RegexValidator,
     InListValidator,
 )
+from .dimension_validators import (
+    DimensionValidator,
+    DataFrameDimensionValidator,
+    ListDimensionValidator,
+)
 from .exceptions import GateException, ValidationError, ConfigurationError
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     # Core
@@ -38,6 +43,10 @@ __all__ = [
     "RangeValidator",
     "RegexValidator",
     "InListValidator",
+    # Dimension Validators
+    "DimensionValidator",
+    "DataFrameDimensionValidator",
+    "ListDimensionValidator",
     # Exceptions
     "GateException",
     "ValidationError",
