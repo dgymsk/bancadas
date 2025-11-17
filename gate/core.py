@@ -4,12 +4,17 @@ Gate Core Module
 Este módulo contém as classes base para o sistema de validação Gate.
 Inspirado no padrão Chain of Responsibility, mas onde todas as validações
 devem passar para que uma linha seja aprovada.
+
+A principal funcionalidade é manter um histórico das validações que falharam
+em uma coluna tipo array, permitindo rastreabilidade completa.
 """
 
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any
 from pyspark.sql import DataFrame, Column
-from pyspark.sql import functions as F
+from pyspark.sql.functions import (
+    col, lit, array, when, size, array_contains
+)
 from .exceptions import ValidationError, ConfigurationError
 
 
@@ -60,169 +65,128 @@ class Gate:
     """
     Classe principal que gerencia a execução de múltiplos validadores.
 
-    O Gate executa todos os validadores na ordem fornecida e apenas
-    as linhas que passarem em TODAS as validações são consideradas válidas.
+    O Gate executa todos os validadores na ordem fornecida e mantém um histórico
+    das validações que falharam em uma coluna array. Uma linha só é considerada
+    válida se passar em TODAS as validações (array de falhas vazio).
     """
 
-    def __init__(self, validators: List[Validator], keep_validation_columns: bool = False):
+    def __init__(self, validators: List[Validator]):
         """
         Inicializa o Gate com uma lista de validadores.
 
         Args:
             validators: Lista de validadores a serem executados
-            keep_validation_columns: Se True, mantém as colunas de validação individuais
-                                    no DataFrame final (útil para debugging)
         """
         if not validators:
             raise ConfigurationError("A lista de validadores não pode estar vazia")
 
         self.validators = validators
-        self.keep_validation_columns = keep_validation_columns
-        self._validation_stats: Dict[str, Any] = {}
 
-    def process(self, df: DataFrame, final_column_name: str = "_gate_passed") -> DataFrame:
+    def process(self, df: DataFrame, history_column: str = "_gate_failures") -> DataFrame:
         """
         Processa o DataFrame aplicando todos os validadores.
 
+        Cria uma coluna array contendo os nomes dos validadores que falharam.
+        Uma linha é válida se o array estiver vazio.
+
         Args:
             df: DataFrame de entrada
-            final_column_name: Nome da coluna final que indica se a linha passou em todas as validações
+            history_column: Nome da coluna que conterá o histórico de falhas (array)
 
         Returns:
-            DataFrame: DataFrame com a coluna de validação adicionada
+            DataFrame: DataFrame com a coluna de histórico adicionada
         """
+        from pyspark.sql.functions import expr
+
         result_df = df
         validation_columns = []
 
-        # Aplica cada validador
+        # Aplica cada validador criando colunas booleanas temporárias
         for validator in self.validators:
             col_name = validator.get_validation_column_name()
             validation_col = validator.validate(result_df)
             result_df = result_df.withColumn(col_name, validation_col)
-            validation_columns.append(col_name)
+            validation_columns.append((col_name, validator.name))
 
-        # Combina todas as validações (AND lógico)
-        # Uma linha só passa se todas as validações retornarem True
-        final_validation = F.lit(True)
-        for col_name in validation_columns:
-            final_validation = final_validation & F.col(col_name)
+        # Constrói array com nomes dos validadores que falharam
+        # Para cada validador: se falhou (False), adiciona o nome; senão, adiciona None
+        failure_conditions = []
+        for col_name, validator_name in validation_columns:
+            failure_conditions.append(
+                when(col(col_name) == False, lit(validator_name)).otherwise(lit(None))
+            )
 
-        result_df = result_df.withColumn(final_column_name, final_validation)
+        # Cria array com todas as condições e filtra valores None usando filter SQL
+        failures_array = array(*failure_conditions)
+        result_df = result_df.withColumn("_temp_failures", failures_array)
+        result_df = result_df.withColumn(
+            history_column,
+            expr("filter(_temp_failures, x -> x is not null)")
+        )
 
-        # Remove colunas intermediárias se não for para mantê-las
-        if not self.keep_validation_columns:
-            result_df = result_df.drop(*validation_columns)
+        # Remove colunas temporárias
+        cols_to_drop = [col_name for col_name, _ in validation_columns] + ["_temp_failures"]
+        result_df = result_df.drop(*cols_to_drop)
 
         return result_df
 
-    def filter_valid(self, df: DataFrame, final_column_name: str = "_gate_passed") -> DataFrame:
+    def filter_valid(self, df: DataFrame, history_column: str = "_gate_failures") -> DataFrame:
         """
         Processa o DataFrame e retorna apenas as linhas que passaram em todas as validações.
 
+        Uma linha é válida se o array de falhas estiver vazio.
+
         Args:
             df: DataFrame de entrada
-            final_column_name: Nome da coluna de validação
+            history_column: Nome da coluna de histórico
 
         Returns:
-            DataFrame: DataFrame filtrado apenas com linhas válidas
+            DataFrame: DataFrame filtrado apenas com linhas válidas (sem coluna de histórico)
         """
-        result_df = self.process(df, final_column_name)
-        valid_df = result_df.filter(F.col(final_column_name) == True)
+        result_df = self.process(df, history_column)
+        valid_df = result_df.filter(size(col(history_column)) == 0)
 
-        # Remove a coluna de validação final
-        valid_df = valid_df.drop(final_column_name)
+        # Remove a coluna de histórico
+        valid_df = valid_df.drop(history_column)
 
         return valid_df
 
-    def filter_invalid(self, df: DataFrame, final_column_name: str = "_gate_passed") -> DataFrame:
+    def filter_invalid(self, df: DataFrame, history_column: str = "_gate_failures") -> DataFrame:
         """
         Processa o DataFrame e retorna apenas as linhas que falharam em alguma validação.
 
+        Mantém a coluna de histórico mostrando quais validações falharam.
+
         Args:
             df: DataFrame de entrada
-            final_column_name: Nome da coluna de validação
+            history_column: Nome da coluna de histórico
 
         Returns:
-            DataFrame: DataFrame filtrado apenas com linhas inválidas
+            DataFrame: DataFrame filtrado apenas com linhas inválidas (com coluna de histórico)
         """
-        result_df = self.process(df, final_column_name)
-        invalid_df = result_df.filter(F.col(final_column_name) == False)
+        result_df = self.process(df, history_column)
+        invalid_df = result_df.filter(size(col(history_column)) > 0)
 
         return invalid_df
 
-    def split(self, df: DataFrame, final_column_name: str = "_gate_passed") -> tuple:
+    def split(self, df: DataFrame, history_column: str = "_gate_failures") -> tuple:
         """
         Processa o DataFrame e retorna dois DataFrames: válidos e inválidos.
 
         Args:
             df: DataFrame de entrada
-            final_column_name: Nome da coluna de validação
+            history_column: Nome da coluna de histórico
 
         Returns:
             tuple: (DataFrame com linhas válidas, DataFrame com linhas inválidas)
         """
-        result_df = self.process(df, final_column_name)
+        result_df = self.process(df, history_column)
 
-        valid_df = result_df.filter(F.col(final_column_name) == True).drop(final_column_name)
-        invalid_df = result_df.filter(F.col(final_column_name) == False)
+        valid_df = result_df.filter(size(col(history_column)) == 0).drop(history_column)
+        invalid_df = result_df.filter(size(col(history_column)) > 0)
 
         return valid_df, invalid_df
 
-    def get_validation_stats(self, df: DataFrame, final_column_name: str = "_gate_passed") -> Dict[str, Any]:
-        """
-        Retorna estatísticas sobre as validações.
-
-        Args:
-            df: DataFrame de entrada
-            final_column_name: Nome da coluna de validação
-
-        Returns:
-            Dict: Dicionário com estatísticas de validação
-        """
-        result_df = self.process(df, final_column_name)
-
-        total_rows = result_df.count()
-        valid_rows = result_df.filter(F.col(final_column_name) == True).count()
-        invalid_rows = total_rows - valid_rows
-
-        stats = {
-            "total_rows": total_rows,
-            "valid_rows": valid_rows,
-            "invalid_rows": invalid_rows,
-            "valid_percentage": (valid_rows / total_rows * 100) if total_rows > 0 else 0,
-            "invalid_percentage": (invalid_rows / total_rows * 100) if total_rows > 0 else 0,
-            "validators": []
-        }
-
-        # Estatísticas por validador
-        if self.keep_validation_columns:
-            for validator in self.validators:
-                col_name = validator.get_validation_column_name()
-                validator_valid = result_df.filter(F.col(col_name) == True).count()
-                validator_invalid = total_rows - validator_valid
-
-                stats["validators"].append({
-                    "name": validator.name,
-                    "valid_rows": validator_valid,
-                    "invalid_rows": validator_invalid,
-                    "valid_percentage": (validator_valid / total_rows * 100) if total_rows > 0 else 0
-                })
-
-        return stats
-
-    def add_validator(self, validator: Validator) -> 'Gate':
-        """
-        Adiciona um novo validador à lista.
-
-        Args:
-            validator: Validador a ser adicionado
-
-        Returns:
-            Gate: Retorna self para permitir method chaining
-        """
-        self.validators.append(validator)
-        return self
-
     def __repr__(self) -> str:
         validators_repr = ", ".join([repr(v) for v in self.validators])
-        return f"Gate(validators=[{validators_repr}], keep_validation_columns={self.keep_validation_columns})"
+        return f"Gate(validators=[{validators_repr}])"

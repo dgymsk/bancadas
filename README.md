@@ -1,292 +1,211 @@
-# Gate - Sistema de Validação para PySpark
+# Gate - Sistema de Validação para PySpark com Histórico
 
-Gate é um sistema flexível e extensível de validação de dados para PySpark, inspirado no padrão **Chain of Responsibility**. Diferentemente do padrão tradicional, o Gate requer que **todas** as validações sejam aprovadas para que uma linha de dados seja considerada válida.
+Gate é um sistema de validação para PySpark que mantém um **histórico completo** das validações que falharam. Inspirado no padrão Chain of Responsibility, mas onde **todas** as validações devem passar para que uma linha seja válida.
 
-## Características
+## 🎯 Ideia Central
 
-- Validação declarativa e modular
-- Múltiplos validadores pré-construídos para casos de uso comuns
-- Suporte para validadores customizados
-- Separação fácil entre dados válidos e inválidos
-- Estatísticas detalhadas de validação
-- Debug facilitado com colunas de validação intermediárias
-- Otimizado para processamento distribuído com PySpark
+A principal funcionalidade do Gate é manter um **vetor (array)** com os nomes dos validadores que falharam para cada linha. Isso fornece:
 
-## Instalação
+- **Rastreabilidade completa**: você sabe exatamente qual validação falhou
+- **Debug facilitado**: identifica padrões de falhas
+- **Auditoria**: mantém registro de problemas de qualidade
+- **Flexibilidade**: pode decidir o que fazer com cada tipo de falha
+
+## 📦 Instalação
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Uso Básico
+## 🚀 Uso Básico
 
 ```python
 from pyspark.sql import SparkSession
-from gate import Gate, NotNullValidator, RangeValidator, EmailValidator
+from gate import Gate, NotNullValidator, RangeValidator
 
 # Criar SparkSession
 spark = SparkSession.builder.appName("GateExample").getOrCreate()
 
-# Criar DataFrame de exemplo
+# Dados de exemplo
 data = [
-    ("João", 25, "joao@email.com"),
-    ("Maria", 30, "maria@email.com"),
-    (None, 22, "pedro@email.com"),      # Nome nulo - será rejeitado
-    ("Ana", -5, "ana@email.com"),       # Idade negativa - será rejeitada
-    ("Carlos", 150, "invalid_email"),   # Email inválido - será rejeitado
+    (1, "João", 25),      # Válido
+    (2, None, 30),        # Nome nulo - FALHA
+    (3, "Ana", -5),       # Idade negativa - FALHA
+    (4, "", 150),         # Nome vazio E idade alta - FALHA em 2 validações
 ]
 
-df = spark.createDataFrame(data, ["nome", "idade", "email"])
+df = spark.createDataFrame(data, ["id", "nome", "idade"])
 
-# Definir validadores
+# Define validadores
 validators = [
-    NotNullValidator(columns=["nome"]),
-    RangeValidator(column="idade", min_value=0, max_value=120),
-    EmailValidator(column="email"),
+    NotNullValidator(columns=["nome"], name="NomeNaoNulo"),
+    RangeValidator(column="idade", min_value=0, max_value=120, name="IdadeValida"),
 ]
 
-# Criar Gate
+# Cria o Gate
 gate = Gate(validators)
 
-# Filtrar apenas linhas válidas
-df_valido = gate.filter_valid(df)
-
-df_valido.show()
+# Processa - adiciona coluna _gate_failures
+df_processado = gate.process(df)
+df_processado.show(truncate=False)
 ```
 
-## Validadores Disponíveis
+**Saída:**
+```
++---+-----+-----+---------------------------+
+|id |nome |idade|_gate_failures             |
++---+-----+-----+---------------------------+
+|1  |João |25   |[]                         |  ← Array vazio = VÁLIDO
+|2  |null |30   |[NomeNaoNulo]              |  ← Falhou em 1 validação
+|3  |Ana  |-5   |[IdadeValida]              |  ← Falhou em 1 validação
+|4  |     |150  |[NomeNaoNulo, IdadeValida] |  ← Falhou em 2 validações
++---+-----+-----+---------------------------+
+```
+
+## 🔧 Métodos Principais
+
+### `process(df, history_column="_gate_failures")`
+Processa o DataFrame e adiciona coluna array com histórico de falhas.
+
+```python
+df_processado = gate.process(df)
+# Retorna DataFrame com coluna _gate_failures
+# Array vazio [] = linha válida
+# Array com nomes = linha inválida (contém quais validações falharam)
+```
+
+### `filter_valid(df)`
+Retorna apenas linhas que passaram em TODAS as validações.
+
+```python
+df_valido = gate.filter_valid(df)
+# Retorna apenas linhas onde _gate_failures está vazio
+# Remove a coluna de histórico
+```
+
+### `filter_invalid(df)`
+Retorna apenas linhas que falharam em alguma validação, **mantendo o histórico**.
+
+```python
+df_invalido = gate.filter_invalid(df)
+# Retorna apenas linhas onde _gate_failures NÃO está vazio
+# MANTÉM a coluna de histórico para análise
+```
+
+### `split(df)`
+Retorna dois DataFrames: válidos e inválidos.
+
+```python
+df_valido, df_invalido = gate.split(df)
+# df_valido: sem coluna de histórico
+# df_invalido: COM coluna de histórico
+```
+
+## 📚 Validadores Disponíveis
 
 ### NotNullValidator
 Valida que colunas não são nulas.
 
 ```python
-NotNullValidator(columns=["id", "nome"])
+NotNullValidator(columns=["id", "nome"], name="CamposObrigatorios")
 ```
 
 ### NotEmptyValidator
 Valida que strings não são vazias (após trim).
 
 ```python
-NotEmptyValidator(columns=["nome", "descricao"])
+NotEmptyValidator(columns=["nome"], name="NomePreenchido")
 ```
 
 ### RangeValidator
-Valida que valores numéricos estão dentro de um intervalo.
+Valida intervalos numéricos.
 
 ```python
 RangeValidator(
     column="idade",
     min_value=0,
     max_value=120,
-    inclusive=True  # Usa >= e <=
+    inclusive=True,  # Usa >= e <=
+    name="IdadeValida"
 )
 ```
 
 ### RegexValidator
-Valida que strings correspondem a um padrão regex.
+Valida padrões regex.
 
 ```python
 RegexValidator(
     column="codigo",
-    pattern=r"^[A-Z]{3}\d{3}$"
+    pattern=r"^[A-Z]{3}\d{3}$",
+    name="CodigoValido"
 )
 ```
 
 ### InListValidator
-Valida que valores estão em uma lista permitida.
+Valida valores em uma lista permitida.
 
 ```python
 InListValidator(
     column="estado",
-    allowed_values=["SP", "RJ", "MG", "ES"]
+    allowed_values=["SP", "RJ", "MG"],
+    name="EstadoValido"
 )
 ```
 
-### LengthValidator
-Valida o comprimento de strings.
-
-```python
-LengthValidator(
-    column="senha",
-    min_length=8,
-    max_length=128
-)
-```
-
-### UniqueValidator
-Valida que não há duplicatas (mantém apenas primeira ocorrência).
-
-```python
-UniqueValidator(columns=["cpf"])
-```
-
-### DateRangeValidator
-Valida que datas estão dentro de um intervalo.
-
-```python
-DateRangeValidator(
-    column="data_nascimento",
-    min_date="1900-01-01",
-    max_date="2024-12-31",
-    date_format="yyyy-MM-dd"
-)
-```
-
-### EmailValidator
-Valida endereços de email.
-
-```python
-EmailValidator(column="email")
-```
-
-### CPFValidator
-Valida formato de CPF (11 dígitos).
-
-```python
-CPFValidator(column="cpf")
-```
-
-### CNPJValidator
-Valida formato de CNPJ (14 dígitos).
-
-```python
-CNPJValidator(column="cnpj")
-```
-
-### CustomValidator
-Validador customizado com lógica própria.
-
-```python
-from pyspark.sql import functions as F
-
-# Validador customizado: total (preço * quantidade) >= 500
-def valida_total_minimo(df):
-    return (F.col("preco") * F.col("quantidade")) >= 500
-
-CustomValidator(valida_total_minimo, name="ValidaTotalMinimo")
-```
-
-## Métodos do Gate
-
-### filter_valid()
-Retorna apenas as linhas que passaram em todas as validações.
-
-```python
-df_valido = gate.filter_valid(df)
-```
-
-### filter_invalid()
-Retorna apenas as linhas que falharam em alguma validação.
-
-```python
-df_invalido = gate.filter_invalid(df)
-```
-
-### split()
-Retorna dois DataFrames: válidos e inválidos.
-
-```python
-df_valido, df_invalido = gate.split(df)
-```
-
-### process()
-Processa o DataFrame e adiciona colunas de validação.
-
-```python
-df_processado = gate.process(df, final_column_name="_passou")
-```
-
-### get_validation_stats()
-Retorna estatísticas detalhadas sobre as validações.
-
-```python
-gate = Gate(validators, keep_validation_columns=True)
-stats = gate.get_validation_stats(df)
-
-print(f"Total: {stats['total_rows']}")
-print(f"Válidos: {stats['valid_rows']} ({stats['valid_percentage']:.1f}%)")
-print(f"Inválidos: {stats['invalid_rows']} ({stats['invalid_percentage']:.1f}%)")
-
-# Estatísticas por validador
-for validator_stats in stats['validators']:
-    print(f"{validator_stats['name']}: {validator_stats['valid_percentage']:.1f}% válidos")
-```
-
-## Exemplo Completo
+## 💡 Exemplo Completo com Análise de Histórico
 
 ```python
 from pyspark.sql import SparkSession
-from gate import (
-    Gate,
-    NotNullValidator,
-    NotEmptyValidator,
-    CPFValidator,
-    EmailValidator,
-    RangeValidator,
-    InListValidator,
-    UniqueValidator,
-)
+from pyspark.sql.functions import explode, col
+from gate import Gate, NotNullValidator, RangeValidator, NotEmptyValidator
 
-spark = SparkSession.builder.appName("GateCompleto").getOrCreate()
+spark = SparkSession.builder.appName("Gate").getOrCreate()
 
-# Dados de clientes
+# Dados com vários problemas
 data = [
-    (1, "João Silva", "12345678901", "joao@email.com", 25, "SP"),
-    (2, "Maria Santos", "98765432100", "maria@email.com", 30, "RJ"),
-    (3, "", "11122233344", "cliente3@email.com", 28, "MG"),  # Nome vazio
-    (4, "Pedro Oliveira", "123", "pedro@email.com", 35, "SP"), # CPF inválido
-    (5, "Ana Costa", "55566677788", "email_invalido", 22, "ES"), # Email inválido
+    (1, "João Silva", 25),
+    (2, "Maria Santos", 30),
+    (3, None, 22),
+    (4, "Ana Costa", -5),
+    (5, "", 150),
+    (6, "Carlos", 200),
 ]
 
-df = spark.createDataFrame(
-    data,
-    ["id", "nome", "cpf", "email", "idade", "estado"]
-)
+df = spark.createDataFrame(data, ["id", "nome", "idade"])
 
-# Definir todas as validações
+# Validadores
 validators = [
-    NotNullValidator(columns=["nome", "cpf", "email"]),
-    NotEmptyValidator(columns=["nome"]),
-    CPFValidator(column="cpf"),
-    EmailValidator(column="email"),
-    RangeValidator(column="idade", min_value=0, max_value=120),
-    InListValidator(column="estado", allowed_values=["SP", "RJ", "MG", "ES"]),
-    UniqueValidator(columns=["cpf"]),
+    NotNullValidator(columns=["nome"], name="NomeNaoNulo"),
+    NotEmptyValidator(columns=["nome"], name="NomeNaoVazio"),
+    RangeValidator(column="idade", min_value=0, max_value=120, name="IdadeValida"),
 ]
 
-# Criar Gate com debug habilitado
-gate = Gate(validators, keep_validation_columns=True)
+gate = Gate(validators)
 
-# Processar e obter estatísticas
-stats = gate.get_validation_stats(df)
+# Separa válidos e inválidos
+df_valido, df_invalido = gate.split(df)
 
-print(f"Total de registros: {stats['total_rows']}")
-print(f"Registros válidos: {stats['valid_rows']} ({stats['valid_percentage']:.1f}%)")
-print(f"Registros inválidos: {stats['invalid_rows']} ({stats['invalid_percentage']:.1f}%)")
+print(f"Total: {df.count()}")
+print(f"Válidos: {df_valido.count()}")
+print(f"Inválidos: {df_invalido.count()}")
 
-print("\nDetalhamento por validador:")
-for validator_stats in stats['validators']:
-    print(f"  {validator_stats['name']}: {validator_stats['valid_percentage']:.1f}% válidos")
+# Analisa as falhas
+print("\nLinhas inválidas com histórico:")
+df_invalido.show(truncate=False)
 
-# Separar válidos e inválidos
-gate_final = Gate(validators)
-df_valido, df_invalido = gate_final.split(df)
-
-print("\nRegistros válidos:")
-df_valido.show()
-
-print("\nRegistros inválidos:")
-df_invalido.show()
+# Conta falhas por tipo de validação
+print("\nDistribuição de falhas por validador:")
+df_invalido.select(
+    explode(col("_gate_failures")).alias("validador")
+).groupBy("validador").count().show()
 ```
 
-## Criando Validadores Customizados
-
-Você pode criar seus próprios validadores estendendo a classe `Validator`:
+## 🎨 Criando Validadores Customizados
 
 ```python
 from gate.core import Validator
 from pyspark.sql import DataFrame, Column
-from pyspark.sql import functions as F
+from pyspark.sql.functions import col, lit
 
 class MaiorIdadeValidator(Validator):
     """Valida que a pessoa é maior de idade"""
@@ -297,105 +216,122 @@ class MaiorIdadeValidator(Validator):
         self.idade_minima = idade_minima
 
     def validate(self, df: DataFrame) -> Column:
-        return F.col(self.column) >= self.idade_minima
+        return col(self.column) >= lit(self.idade_minima)
 
-# Usar o validador customizado
+# Usar
 validators = [
-    MaiorIdadeValidator(column="idade", idade_minima=21)
+    MaiorIdadeValidator(column="idade", idade_minima=21, name="MaiorDe21")
 ]
 gate = Gate(validators)
 ```
 
-## Estrutura do Projeto
+## 🔍 Casos de Uso
+
+### 1. Limpeza de Dados ETL
+```python
+# Separa dados válidos para processamento e inválidos para análise
+df_valido, df_invalido = gate.split(df_raw)
+
+# Processa apenas dados válidos
+df_valido.write.parquet("dados_limpos.parquet")
+
+# Salva inválidos com histórico para correção
+df_invalido.write.parquet("dados_rejeitados.parquet")
+```
+
+### 2. Monitoramento de Qualidade
+```python
+# Processa dados mantendo histórico
+df_processado = gate.process(df)
+
+# Analisa quais validações mais falham
+from pyspark.sql.functions import explode, col
+
+df_processado.filter(col("_gate_failures").isNotNull()) \
+    .select(explode(col("_gate_failures")).alias("falha")) \
+    .groupBy("falha").count() \
+    .orderBy("count", ascending=False) \
+    .show()
+```
+
+### 3. Debug e Auditoria
+```python
+# Identifica registros com múltiplas falhas
+from pyspark.sql.functions import size
+
+df_invalido = gate.filter_invalid(df)
+df_problematicos = df_invalido.filter(size(col("_gate_failures")) > 1)
+
+print("Registros com múltiplas validações falhadas:")
+df_problematicos.show(truncate=False)
+```
+
+## 📖 Estrutura do Projeto
 
 ```
 bancadas/
 ├── gate/
 │   ├── __init__.py          # Exports principais
-│   ├── core.py              # Classes base (Gate, Validator)
+│   ├── core.py              # Classes Gate e Validator
 │   ├── validators.py        # Validadores pré-construídos
 │   └── exceptions.py        # Exceções customizadas
 ├── examples/
-│   └── usage_example.py     # Exemplos de uso
+│   ├── simple_example.py    # Exemplo simples focado na ideia central
+│   └── usage_example.py     # Exemplos variados
 ├── tests/
-│   ├── __init__.py
 │   └── test_gate.py         # Testes unitários
-├── requirements.txt         # Dependências
-└── README.md               # Documentação
+├── README.md
+└── requirements.txt
 ```
 
-## Executando os Exemplos
+## 🧪 Executando os Exemplos
 
 ```bash
 cd examples
-python usage_example.py
+python simple_example.py  # Exemplo simples e direto
+python usage_example.py   # Exemplos variados
 ```
 
-## Executando os Testes
+## ✅ Boas Práticas
 
-```bash
-pytest tests/test_gate.py -v
-```
-
-## Casos de Uso
-
-### 1. Limpeza de Dados
-Filtre dados inválidos antes de processar em pipelines ETL.
-
-### 2. Validação de Entrada
-Valide dados de entrada antes de gravar em tabelas finais.
-
-### 3. Qualidade de Dados
-Monitore a qualidade dos dados com estatísticas detalhadas.
-
-### 4. Debugging
-Use `keep_validation_columns=True` para identificar quais validações estão falhando.
-
-### 5. Segregação de Dados
-Separe dados válidos e inválidos para processamento diferenciado.
-
-## Boas Práticas
-
-1. **Nomeie seus validadores**: Use o parâmetro `name` para facilitar o debug
+1. **Nomeie seus validadores** - Facilita identificação no histórico
    ```python
-   NotNullValidator(columns=["id"], name="ValidaIDNaoNulo")
+   NotNullValidator(columns=["id"], name="IDObrigatorio")
    ```
 
-2. **Use keep_validation_columns para debug**: Ative durante desenvolvimento
+2. **Use o histórico** - Analise padrões de falhas
    ```python
-   gate = Gate(validators, keep_validation_columns=True)
+   df_invalido = gate.filter_invalid(df)
+   # Analise _gate_failures para entender problemas
    ```
 
-3. **Ordem importa**: Coloque validações mais baratas primeiro
+3. **Separe válidos e inválidos** - Processe diferentemente
+   ```python
+   df_valido, df_invalido = gate.split(df)
+   ```
+
+4. **Validações mais baratas primeiro** - Otimiza performance
    ```python
    validators = [
-       NotNullValidator(...),      # Rápido
-       RangeValidator(...),        # Rápido
-       UniqueValidator(...),       # Mais custoso
+       NotNullValidator(...),   # Rápido
+       RangeValidator(...),     # Rápido
+       RegexValidator(...),     # Mais custoso
    ]
    ```
 
-4. **Reutilize validadores**: Crie validadores reutilizáveis para regras de negócio comuns
+## 📝 Licença
 
-5. **Monitore estatísticas**: Use `get_validation_stats()` para monitorar qualidade dos dados
+MIT License
 
-## Contribuindo
+## 🤝 Contribuindo
 
 Contribuições são bem-vindas! Para adicionar novos validadores:
 
 1. Crie uma classe que herda de `Validator`
 2. Implemente o método `validate()` que retorna uma `Column` booleana
-3. Adicione testes em `tests/test_gate.py`
-4. Atualize a documentação
-
-## Licença
-
-MIT License
-
-## Autores
-
-Projeto criado para facilitar validações em pipelines PySpark no Databricks.
+3. Use `col()`, `lit()` e outras funções diretamente (sem alias como `F.`)
+4. Adicione testes
 
 ---
 
-Para mais exemplos e uso avançado, consulte o arquivo `examples/usage_example.py`.
+**Para mais exemplos**, consulte `examples/simple_example.py` que demonstra a ideia central do histórico de validações.

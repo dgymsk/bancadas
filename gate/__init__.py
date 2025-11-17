@@ -23,17 +23,10 @@ from .validators import (
     RangeValidator,
     RegexValidator,
     InListValidator,
-    LengthValidator,
-    UniqueValidator,
-    CustomValidator,
-    DateRangeValidator,
-    EmailValidator,
-    CPFValidator,
-    CNPJValidator,
 )
 from .exceptions import GateException, ValidationError, ConfigurationError
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 __all__ = [
     # Core
@@ -45,13 +38,6 @@ __all__ = [
     "RangeValidator",
     "RegexValidator",
     "InListValidator",
-    "LengthValidator",
-    "UniqueValidator",
-    "CustomValidator",
-    "DateRangeValidator",
-    "EmailValidator",
-    "CPFValidator",
-    "CNPJValidator",
     # Exceptions
     "GateException",
     "ValidationError",
